@@ -313,6 +313,7 @@ class KronWhiten:
 
         # default to dQ="Q0.5EQ1.5"
         self._update_precond = update_precond_kron_whiten_q0p5eq1p5
+        self._precond_grad = precond_grad_kron
         #endregion
 
     @torch.no_grad()
@@ -328,7 +329,7 @@ class KronWhiten:
         if self._QLs_exprs is None:
             scale = max([torch.mean((torch.abs(g))**4) for g in grads])
             scale = (scale + self.damping**4)**(-1/8)
-            self._QLs_exprs = [init_kron(g, scale, self._preconditioner_max_size, self._preconditioner_max_skew, self._dQ) for g in grads]
+            self._QLs_exprs = [init_kron(g, scale, self._preconditioner_max_size, self._preconditioner_max_skew) for g in grads]
 
         if self.momentum > 0:
             beta = min(self._counter_m/(1 + self._counter_m), self.momentum)

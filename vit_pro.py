@@ -1,17 +1,19 @@
 """
-ViT demo. 
+ViT demo.
 The ViT model is from
     https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
 """
 
-#region Seed & dependencies
+# region Seed & dependencies
+import psgd_pro as psgd # !!
+
 import copy
 
 import sys
 import time
 
 import matplotlib.pyplot as plt
-import numpy as np 
+import numpy as np
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -19,24 +21,24 @@ from einops import rearrange, repeat
 from torch import nn
 from einops.layers.torch import Rearrange
 
-sys.path.append("..")
-import psgd
 
 device = torch.device("cuda")
 
+
 def set_seed(seed):
-    # from chatgpt 
-    np.random.seed(seed)                   # NumPy RNG
-    torch.manual_seed(seed)                # PyTorch CPU RNG
-    torch.cuda.manual_seed(seed)           # PyTorch GPU RNG (if using CUDA)
+    # from chatgpt
+    np.random.seed(seed)  # NumPy RNG
+    torch.manual_seed(seed)  # PyTorch CPU RNG
+    torch.cuda.manual_seed(seed)  # PyTorch GPU RNG (if using CUDA)
 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-set_seed(42)
-#endregion
 
-#region Dataset
+set_seed(42)
+# endregion
+
+# region Dataset
 transform_train = transforms.Compose(
     [
         transforms.RandomCrop(32, padding=4),
@@ -62,13 +64,14 @@ testset = torchvision.datasets.CIFAR10(
     root="./data", train=False, download=True, transform=transform_test
 )
 test_loader = torch.utils.data.DataLoader(testset, batch_size=1000, shuffle=False)
-#endregion
+# endregion
 
-#region Model
+# region Model
 """
 the ViT model is from
     https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
 """
+
 # helpers
 def pair(t):
     return t if isinstance(t, tuple) else (t, t)
@@ -89,6 +92,7 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
 class Attention(nn.Module):
     def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
@@ -96,7 +100,7 @@ class Attention(nn.Module):
         project_out = not (heads == 1 and dim_head == dim)
 
         self.heads = heads
-        self.scale = dim_head**-0.5
+        self.scale = dim_head ** -0.5
 
         self.norm = nn.LayerNorm(dim)
 
@@ -152,27 +156,27 @@ class Transformer(nn.Module):
 
 class ViT(nn.Module):
     def __init__(
-        self,
-        *,
-        image_size,
-        patch_size,
-        num_classes,
-        dim,
-        depth,
-        heads,
-        mlp_dim,
-        pool="cls",
-        channels=3,
-        dim_head=64,
-        dropout=0.0,
-        emb_dropout=0.0,
+            self,
+            *,
+            image_size,
+            patch_size,
+            num_classes,
+            dim,
+            depth,
+            heads,
+            mlp_dim,
+            pool="cls",
+            channels=3,
+            dim_head=64,
+            dropout=0.0,
+            emb_dropout=0.0,
     ):
         super().__init__()
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
 
         assert (
-            image_height % patch_height == 0 and image_width % patch_width == 0
+                image_height % patch_height == 0 and image_width % patch_width == 0
         ), "Image dimensions must be divisible by the patch size."
 
         num_patches = (image_height // patch_height) * (image_width // patch_width)
@@ -233,9 +237,11 @@ Net = ViT(
     dropout=0.1,
     emb_dropout=0.1,
 )
-#endregion
 
-#region Test accuracy CL
+
+# endregion
+
+# region Test accuracy CL
 def test(net, data_loader):
     correct = 0
     total = 0
@@ -249,12 +255,14 @@ def test(net, data_loader):
 
     accuracy = correct / total
     return accuracy
-#endregion
 
-#region AdamTest
+
+# endregion
+
+# region PSGD Pro (KronWhiten Q0.5EQ1.5) Test
 """
-Now we compare Adam(W) (the default optimizer for transformer) and PSGD.
-We align their settings, and the only difference is their preconditioners.  
+PSGD, Kron, gradient whitening
+(legacy : dQ={EQ, QE, QUAD, QEP})
 """
 num_epochs = 100
 plt.figure(figsize=(8, 4))
@@ -263,15 +271,20 @@ ax2 = plt.subplot(122)
 ax1.yaxis.tick_right()
 ax2.yaxis.tick_right()
 
-"""
-Adam 
-"""
 net = copy.deepcopy(Net).to(device)
-lr0 = 1e-3
-opt = torch.optim.Adam(net.parameters(), lr=lr0)  # will aneal lr to lr0/num_epochs
+
+lr0 = 1e-3  # keep the same as Adam
+opt = psgd.KronWhiten(
+    net.parameters(),
+    preconditioner_max_skew=2,
+    lr_params=lr0,  # will aneal to lr0/num_epochs
+    preconditioner_update_probability=1.0,  # anneal to 0.01
+    momentum=0.9
+)
 
 TrainLoss = []
 TestAcc = []
+
 t0 = time.time()
 for epoch in range(num_epochs):
     """train"""
@@ -279,28 +292,28 @@ for epoch in range(num_epochs):
     for _, (inputs, targets) in enumerate(train_loader):
         inputs, targets = inputs.to(device), targets.to(device)
 
+
         def closure():
             outputs = net(inputs)
             loss = nn.functional.cross_entropy(outputs, targets)
             return loss
 
-        opt.zero_grad()
-        loss = closure()
-        loss.backward()
-        opt.step()
+
+        loss = opt.step(closure)
         TrainLoss.append(loss.item())
 
     """test"""
     net.eval()
     test_acc = test(net, test_loader)
     TestAcc.append(test_acc)
-    print(f"Adam, epoch {epoch + 1}, best test accuracy {max(TestAcc)}")
+    print(f"PSGD, epoch {epoch + 1}, best test accuracy {max(TestAcc)}")
 
-    opt.param_groups[0]["lr"] -= lr0 / num_epochs
+    opt.lr_params -= lr0 / num_epochs
+    opt.preconditioner_update_probability = max(opt.preconditioner_update_probability * 0.1 ** 0.1, 0.01)
 
 total_time = time.time() - t0
 
-SmoothedTrainLoss = np.convolve(TrainLoss, np.ones(100)/100)[99:-99]
+SmoothedTrainLoss = np.convolve(TrainLoss, np.ones(100) / 100)[99:-99]
 ax1.plot(
     torch.arange(1, len(SmoothedTrainLoss) + 1).cpu() * total_time / len(SmoothedTrainLoss),
     SmoothedTrainLoss,
@@ -309,95 +322,25 @@ ax2.plot(
     torch.arange(1, len(TestAcc) + 1).cpu() * total_time / len(TestAcc),
     TestAcc,
 )
-#endregion
+# endregion
 
-#region PSGD Pro (KronWhiten Q0.5EQ1.5) Test
-"""
-PSGD, Kron, gradient whitening
-(legacy : dQ={EQ, QE, QUAD, QEP})
-"""
-for dQ in ["Q0.5EQ1.5",]:
-    net = copy.deepcopy(Net).to(device)
-    
-    lr0 = 1e-3  # keep the same as Adam
-    opt = psgd.KronWhiten(
-        net.parameters(),
-        preconditioner_max_skew=2,
-        lr_params=lr0,  # will aneal to lr0/num_epochs
-        preconditioner_update_probability=1.0,  # anneal to 0.01
-        momentum=0.9,
-        dQ=dQ,
-    )
-    
-    TrainLoss = []
-    TestAcc = []
-    
-    t0 = time.time()
-    for epoch in range(num_epochs):
-        """train"""
-        net.train()
-        for _, (inputs, targets) in enumerate(train_loader):
-            inputs, targets = inputs.to(device), targets.to(device)
-    
-            def closure():
-                outputs = net(inputs)
-                loss = nn.functional.cross_entropy(outputs, targets)
-                return loss
-    
-            loss = opt.step(closure)
-            TrainLoss.append(loss.item())
-    
-        """test"""
-        net.eval()
-        test_acc = test(net, test_loader)
-        TestAcc.append(test_acc)
-        print(f"PSGD, epoch {epoch + 1}, best test accuracy {max(TestAcc)}")
-    
-        opt.lr_params -= lr0 / num_epochs
-        opt.preconditioner_update_probability = max(opt.preconditioner_update_probability * 0.1**0.1, 0.01)
-    
-    total_time = time.time() - t0
-    
-    SmoothedTrainLoss = np.convolve(TrainLoss, np.ones(100)/100)[99:-99]
-    ax1.plot(
-        torch.arange(1, len(SmoothedTrainLoss) + 1).cpu() * total_time / len(SmoothedTrainLoss),
-        SmoothedTrainLoss,
-    )
-    ax2.plot(
-        torch.arange(1, len(TestAcc) + 1).cpu() * total_time / len(TestAcc),
-        TestAcc,
-    )
-#endregion
-
-#region MatPlot
+# region MatPlot
 """ PSGD PRO """
 ax1.set_xlabel("Wall time (s)", fontsize=6)
 ax1.set_ylabel("Train loss", fontsize=6)
 ax1.tick_params(labelsize=6)
-ax1.legend(
-    [
-        "Adam",
-        r"PSGD, $dQ=Q^{0.5}\mathcal{E}Q^{1.5}$",
-    ],
-    fontsize=7,
-)
+ax1.legend([r"PSGD, $dQ=Q^{0.5}\mathcal{E}Q^{1.5}$"], fontsize=7)
 ax1.set_title("(a)", fontsize=7)
 
 """ Adam """
 ax2.set_xlabel("Wall time (s)", fontsize=6)
 ax2.set_ylabel("Test accuracy", fontsize=6)
 ax2.tick_params(labelsize=6)
-ax2.legend(
-    [
-        "Adam",
-        r"PSGD, $dQ=Q^{0.5}\mathcal{E}Q^{1.5}$",
-    ],
-    fontsize=7,
-)
+ax2.legend([r"PSGD, $dQ=Q^{0.5}\mathcal{E}Q^{1.5}$"], fontsize=7)
 ax2.set_title("(b)", fontsize=7)
 
 """ Meta """
-plt.savefig("vit_adam_vs_psgd.svg")
-plt.savefig("vit_adam_vs_psgd.eps")
+plt.savefig("vit_psgd_pro.svg")
+plt.savefig("vit_psgd_pro.eps")
 plt.show()
-#endregion
+# endregion
