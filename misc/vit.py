@@ -4,6 +4,7 @@ The ViT model is from
     https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
 """
 
+#region Seed & dependencies
 import copy
 
 import sys
@@ -15,14 +16,13 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
 from torch import nn
+from einops.layers.torch import Rearrange
 
 sys.path.append("..")
 import psgd
 
 device = torch.device("cuda")
-
 
 def set_seed(seed):
     # from chatgpt 
@@ -34,10 +34,9 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 set_seed(42)
+#endregion
 
-"""
-Prepare the dataset
-"""
+#region Dataset
 transform_train = transforms.Compose(
     [
         transforms.RandomCrop(32, padding=4),
@@ -63,21 +62,18 @@ testset = torchvision.datasets.CIFAR10(
     root="./data", train=False, download=True, transform=transform_test
 )
 test_loader = torch.utils.data.DataLoader(testset, batch_size=1000, shuffle=False)
+#endregion
 
+#region Model
 """
 the ViT model is from
     https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
 """
 # helpers
-
-
 def pair(t):
     return t if isinstance(t, tuple) else (t, t)
 
-
 # classes
-
-
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout=0.0):
         super().__init__()
@@ -92,7 +88,6 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
 
 class Attention(nn.Module):
     def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
@@ -238,13 +233,9 @@ Net = ViT(
     dropout=0.1,
     emb_dropout=0.1,
 )
+#endregion
 
-
-"""
-Test accuracy
-"""
-
-
+#region Test accuracy CL
 def test(net, data_loader):
     correct = 0
     total = 0
@@ -258,8 +249,9 @@ def test(net, data_loader):
 
     accuracy = correct / total
     return accuracy
+#endregion
 
-
+#region AdamTest
 """
 Now we compare Adam(W) (the default optimizer for transformer) and PSGD.
 We align their settings, and the only difference is their preconditioners.  
@@ -317,10 +309,12 @@ ax2.plot(
     torch.arange(1, len(TestAcc) + 1).cpu() * total_time / len(TestAcc),
     TestAcc,
 )
+#endregion
 
-
+#region PSGD Pro (KronWhiten Q0.5EQ1.5) Test
 """
-PSGD, Kron, gradient whitening, dQ={EQ, QE, QUAD, QEP}
+PSGD, Kron, gradient whitening
+(legacy : dQ={EQ, QE, QUAD, QEP})
 """
 for dQ in ["Q0.5EQ1.5",]:
     net = copy.deepcopy(Net).to(device)
@@ -373,8 +367,10 @@ for dQ in ["Q0.5EQ1.5",]:
         torch.arange(1, len(TestAcc) + 1).cpu() * total_time / len(TestAcc),
         TestAcc,
     )
+#endregion
 
-
+#region MatPlot
+""" PSGD PRO """
 ax1.set_xlabel("Wall time (s)", fontsize=6)
 ax1.set_ylabel("Train loss", fontsize=6)
 ax1.tick_params(labelsize=6)
@@ -387,6 +383,7 @@ ax1.legend(
 )
 ax1.set_title("(a)", fontsize=7)
 
+""" Adam """
 ax2.set_xlabel("Wall time (s)", fontsize=6)
 ax2.set_ylabel("Test accuracy", fontsize=6)
 ax2.tick_params(labelsize=6)
@@ -399,6 +396,8 @@ ax2.legend(
 )
 ax2.set_title("(b)", fontsize=7)
 
+""" Meta """
 plt.savefig("vit_adam_vs_psgd.svg")
 plt.savefig("vit_adam_vs_psgd.eps")
 plt.show()
+#endregion
