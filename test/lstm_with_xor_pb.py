@@ -3,6 +3,7 @@
 python test/lstm_with_xor_pb.py                       # 20 profiled steps, timing table
 python test/lstm_with_xor_pb.py --plot                # also records and plots the loss
 python test/lstm_with_xor_pb.py --trace trace.json    # dump for ui.perfetto.dev / chrome://tracing
+python test/lstm_with_xor_pb.py --compile_mode default           # torch.compile the step
 """
 
 import argparse
@@ -68,6 +69,8 @@ def main():
     parser.add_argument("--device", default="cpu", help="cpu or cuda")
     parser.add_argument("--plot", action="store_true", help="record the loss of each step and plot it at the end")
     parser.add_argument("--trace", default=None, help="write a chrome trace file, viewable at ui.perfetto.dev")
+    parser.add_argument("--compile_mode", default=None,
+                        help="torch.compile mode for the loss, e.g. default, reduce-overhead, max-autotune")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -75,12 +78,14 @@ def main():
     opt = psgd.KronWhiten(lstm_net.parameters(), preconditioner_init_scale=1.0, lr_params=args.lr,
                           preconditioner_max_skew=dim_hidden+1) # full quality preconditionner, max skew nether reacher
 
+    step_fn = torch.compile(opt.step, mode=args.compile_mode) if args.compile_mode else opt.step
+
     def training_step():
         with torch.profiler.record_function("generate_data"):
             x, y = generate_train_data()
             x, y = x.to(device), y.to(device)
         with torch.profiler.record_function("opt_step"):
-            return opt.step(lambda: train_loss(lstm_net, (x, y)))
+            return step_fn(lambda: train_loss(lstm_net, (x, y)))
 
     for _ in range(5):  # warmup outside the profiler: lazy preconditioner init, thread pools, etc.
         training_step()
